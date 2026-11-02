@@ -257,9 +257,36 @@ class _LauncherConfigPageState extends State<LauncherConfigPage> {
         _section('Windows'),
         _cardBox(
           children: [
+            ListTile(
+              leading: const Icon(Icons.push_pin_outlined, color: Colors.white70),
+              title: const Text('Crear acceso directo en el Escritorio',
+                  style: TextStyle(color: Colors.white)),
+              subtitle: const Text(
+                'LOL Lite.lnk en el escritorio (un clic para abrir)',
+                style: TextStyle(color: Colors.white38),
+              ),
+              trailing: FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: _accent),
+                onPressed: () async {
+                  final ok =
+                      await VersionService.instance.createDesktopShortcut();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(ok
+                          ? 'Acceso directo creado en el Escritorio'
+                          : (VersionService.instance.lastInstallError ??
+                              'No se pudo crear el acceso directo')),
+                    ),
+                  );
+                },
+                child: const Text('Crear'),
+              ),
+            ),
+            const Divider(color: _border, height: 20),
             SwitchListTile(
               title: const Text('Iniciar con Windows', style: TextStyle(color: Colors.white)),
-              subtitle: const Text('Requiere permiso; se aplica en la próxima versión del instalador', style: TextStyle(color: Colors.white38)),
+              subtitle: const Text('Se registra en el inicio de Windows. Se actualiza solo tras cada update.', style: TextStyle(color: Colors.white38)),
               value: _startWithWindows,
               activeColor: _accent,
               onChanged: (v) async {
@@ -270,7 +297,10 @@ class _LauncherConfigPageState extends State<LauncherConfigPage> {
             ),
             SwitchListTile(
               title: const Text('Cerrar a la bandeja', style: TextStyle(color: Colors.white)),
-              subtitle: const Text('Al cerrar, la ventana se oculta (se restaura desde la barra de tareas)', style: TextStyle(color: Colors.white38)),
+              subtitle: const Text(
+                'Al pulsar X se oculta en la flechita de notificaciones (bandeja) y sale de la barra de tareas. Minimizar sigue funcionando normal.',
+                style: TextStyle(color: Colors.white38),
+              ),
               value: _closeToTray,
               activeColor: _accent,
               onChanged: (v) async {

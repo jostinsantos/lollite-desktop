@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/repo_manifest.dart';
 import 'github_service.dart';
@@ -26,6 +27,43 @@ class RepoLoader {
   static const maxEntryBytes = 1024 * 1024; // 1 MB
   static const maxIconPeekBytes = 64 * 1024;
 
+  /// Parseo robusto de JSON (Windows a veces trae BOM, comas finales o HTML de error).
+  static Map<String, dynamic> parseJsonMap(String raw, {String label = 'JSON'}) {
+    var s = raw.trim();
+    // UTF-8 BOM
+    if (s.startsWith('\uFEFF')) s = s.substring(1).trim();
+    if (s.isEmpty) {
+      throw FormatException('$label vacío');
+    }
+    if (s.startsWith('<!') || s.toLowerCase().startsWith('<html')) {
+      throw FormatException(
+        '$label no es JSON (recibió HTML). Revisa la URL del manifest.',
+      );
+    }
+    // Comas finales antes de ] o } (común al editar a mano)
+    s = s.replaceAll(RegExp(r',\s*]'), ']');
+    s = s.replaceAll(RegExp(r',\s*}'), '}');
+    try {
+      final decoded = jsonDecode(s);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      throw FormatException('$label no es un objeto JSON');
+    } on FormatException catch (e) {
+      debugPrint('[RepoLoader] $label parse error: $e');
+      debugPrint(
+          '[RepoLoader] preview: ${s.length > 200 ? s.substring(0, 200) : s}');
+      rethrow;
+    }
+  }
+
+  static String decodeBody(http.Response res) {
+    try {
+      return utf8.decode(res.bodyBytes, allowMalformed: true);
+    } catch (_) {
+      return res.body;
+    }
+  }
+
   /// Resultado de carga (manifest + JS + contract opcional).
   Future<({RepoManifest manifest, String? jsCode, String sourceUrl, RepoContract? contract})>
       fromGithub(String userRepo) async {
@@ -44,7 +82,7 @@ class RepoLoader {
     }
 
     final body = await _github.fetchRaw(manifestUrl);
-    final map = jsonDecode(body) as Map<String, dynamic>;
+    final map = parseJsonMap(body, label: 'manifest');
     var manifest = RepoManifest.fromJson(map, repo: userRepo);
 
     String? jsCode;
@@ -84,7 +122,7 @@ class RepoLoader {
           // Si supera el límite, devolver null (el modal usará solo el manifest)
           return null;
         }
-        final map = jsonDecode(body) as Map<String, dynamic>;
+        final map = parseJsonMap(body, label: 'contract');
         return RepoContract.fromJson(map);
       } catch (_) {}
     }
@@ -99,11 +137,18 @@ class RepoLoader {
 
   Future<({RepoManifest manifest, String? jsCode, String sourceUrl, RepoContract? contract})>
       fromUrl(String url) async {
-    final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 20));
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'LOLLiteDesktop/1.0',
+        'Accept': 'application/json, text/plain, */*',
+      },
+    ).timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) {
       throw Exception('No se pudo descargar el manifest (${res.statusCode})');
     }
-    final map = jsonDecode(res.body) as Map<String, dynamic>;
+    final body = decodeBody(res);
+    final map = parseJsonMap(body, label: 'manifest');
     var manifest = RepoManifest.fromJson(map);
 
     final base = url.contains('/') ? url.substring(0, url.lastIndexOf('/') + 1) : url;
@@ -113,9 +158,13 @@ class RepoLoader {
     if (entry.toLowerCase().endsWith('.js')) {
       try {
         final entryUrl = entry.startsWith('http') ? entry : '$base$entry';
-        final jsRes = await http.get(Uri.parse(entryUrl)).timeout(const Duration(seconds: 20));
-        if (jsRes.statusCode == 200 && jsRes.body.trim().isNotEmpty) {
-          jsCode = jsRes.body;
+        final jsRes = await http.get(
+          Uri.parse(entryUrl),
+          headers: {'User-Agent': 'LOLLiteDesktop/1.0'},
+        ).timeout(const Duration(seconds: 20));
+        if (jsRes.statusCode == 200) {
+          final code = decodeBody(jsRes).trim();
+          if (code.isNotEmpty) jsCode = code;
         }
       } catch (_) {}
     }
@@ -135,9 +184,12 @@ class RepoLoader {
     for (final name in _contractNames) {
       try {
         final cUrl = '$base$name';
-        final cRes = await http.get(Uri.parse(cUrl)).timeout(const Duration(seconds: 10));
+        final cRes = await http.get(
+          Uri.parse(cUrl),
+          headers: {'User-Agent': 'LOLLiteDesktop/1.0'},
+        ).timeout(const Duration(seconds: 10));
         if (cRes.statusCode == 200) {
-          final cMap = jsonDecode(cRes.body) as Map<String, dynamic>;
+          final cMap = parseJsonMap(decodeBody(cRes), label: 'contract');
           contract = RepoContract.fromJson(cMap);
           break;
         }
@@ -155,7 +207,7 @@ class RepoLoader {
       if (url == null) continue;
       try {
         final body = await _github.fetchRaw(url);
-        final map = jsonDecode(body) as Map<String, dynamic>;
+        final map = parseJsonMap(body, label: 'manifest');
         final icon = (map['icon'] ?? map['logo'])?.toString();
         if (icon == null || icon.isEmpty) continue;
         if (icon.startsWith('http')) return icon;

@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -8,11 +11,28 @@ import '../../data/services/github_service.dart';
 import '../../data/models/repo_manifest.dart';
 import '../../ui/shared/install_repo_dialog.dart';
 
-const _bg = Color(0xFF0B0D10);
 const _card = Color(0xFF161A22);
-const _border = Color(0xFF1E2430);
 const _accent = Color(0xFFE50914);
-const _textMuted = Color(0x99FFFFFF);
+
+String displayTitle(String? s) {
+  if (s == null || s.isEmpty) return '';
+  final cleaned = s
+      .replaceAll('-', ' ')
+      .replaceAll('_', ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (cleaned.isEmpty) return '';
+  return cleaned.split(' ').map((w) {
+    if (w.isEmpty) return w;
+    return '${w[0].toUpperCase()}${w.length > 1 ? w.substring(1) : ''}';
+  }).join(' ');
+}
+
+String displayAuthor(String? repo) {
+  if (repo == null || repo.isEmpty) return '';
+  final parts = repo.split('/');
+  return parts.isNotEmpty ? parts.first : repo;
+}
 
 class CommunityPage extends StatefulWidget {
   const CommunityPage({super.key});
@@ -28,6 +48,7 @@ class _CommunityPageState extends State<CommunityPage> {
   String _query = '';
   final _searchCtrl = TextEditingController();
   final Map<String, String?> _iconCache = {};
+  final Map<String, String> _nameCache = {};
 
   @override
   void initState() {
@@ -53,7 +74,7 @@ class _CommunityPageState extends State<CommunityPage> {
         _items = list;
         _loading = false;
       });
-      _prefetchIcons(list);
+      unawaited(_prefetchIcons(list));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -65,19 +86,25 @@ class _CommunityPageState extends State<CommunityPage> {
 
   Future<void> _prefetchIcons(List<CommunityRepoItem> list) async {
     final mgr = context.read<RepoManager>();
-    final limit = list.length > 24 ? 24 : list.length;
+    final limit = list.length > 30 ? 30 : list.length;
     for (var i = 0; i < limit; i++) {
-      final item = list[i];
       if (!mounted) return;
+      final item = list[i];
       if (_iconCache.containsKey(item.repo)) continue;
       try {
         final icon = await mgr.peekIcon(item.repo);
         if (!mounted) return;
-        setState(() => _iconCache[item.repo] = icon);
+        setState(() => _iconCache[item.repo] = icon ?? item.avatarUrl);
       } catch (_) {
-        _iconCache[item.repo] = null;
+        _iconCache[item.repo] = item.avatarUrl;
       }
     }
+  }
+
+  String _titleFor(CommunityRepoItem item) {
+    final cached = _nameCache[item.repo];
+    if (cached != null && cached.isNotEmpty) return displayTitle(cached);
+    return displayTitle(item.name);
   }
 
   bool _isInstalled(String userRepo) {
@@ -100,24 +127,30 @@ class _CommunityPageState extends State<CommunityPage> {
     return _items.where((e) {
       return e.name.toLowerCase().contains(q) ||
           e.repo.toLowerCase().contains(q) ||
-          e.description.toLowerCase().contains(q);
+          _titleFor(e).toLowerCase().contains(q);
     }).toList();
   }
 
   Future<void> _install(CommunityRepoItem item) async {
     final mgr = context.read<RepoManager>();
+    final title = _titleFor(item);
 
-    // Mostrar loading
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator(color: _accent)),
+      builder: (_) =>
+          const Center(child: CircularProgressIndicator(color: _accent)),
     );
 
     try {
       final preview = await mgr.previewFromGithub(item.repo);
       if (!mounted) return;
-      Navigator.of(context).pop(); // cerrar loading
+      Navigator.of(context).pop();
+
+      final n = (preview.manifest.name ?? '').toString().trim();
+      if (n.isNotEmpty) {
+        setState(() => _nameCache[item.repo] = n);
+      }
 
       final ok = await showInstallRepoDialog(
         context,
@@ -128,11 +161,11 @@ class _CommunityPageState extends State<CommunityPage> {
       );
 
       if (ok == true && mounted) {
-        // loading otra vez mientras instala
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (_) => const Center(child: CircularProgressIndicator(color: _accent)),
+          builder: (_) =>
+              const Center(child: CircularProgressIndicator(color: _accent)),
         );
         try {
           await mgr.installFromPreview(preview);
@@ -141,7 +174,7 @@ class _CommunityPageState extends State<CommunityPage> {
           setState(() {});
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${item.name} instalado'),
+              content: Text('$title instalado'),
               backgroundColor: _accent,
               behavior: SnackBarBehavior.floating,
             ),
@@ -150,13 +183,16 @@ class _CommunityPageState extends State<CommunityPage> {
           if (!mounted) return;
           Navigator.of(context).pop();
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error al instalar: $e'), backgroundColor: Colors.red),
+            SnackBar(
+              content: Text('Error al instalar: $e'),
+              backgroundColor: Colors.red,
+            ),
           );
         }
       }
     } catch (e) {
       if (!mounted) return;
-      Navigator.of(context).pop(); // cerrar loading
+      Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
       );
@@ -165,14 +201,17 @@ class _CommunityPageState extends State<CommunityPage> {
 
   Future<void> _uninstall(CommunityRepoItem item) async {
     final mgr = context.read<RepoManager>();
-    final installed = mgr.installed;
     final key = item.repo.toLowerCase();
+    final title = _titleFor(item);
     InstalledRepo? match;
-    for (final r in installed) {
+    for (final r in mgr.installed) {
       final id = r.manifest.id.toLowerCase();
       final source = r.sourceUrl.toLowerCase();
       final repoField = r.manifest.repo.toLowerCase();
-      if (id == key || source.contains(key) || key.contains(id) || repoField == key) {
+      if (id == key ||
+          source.contains(key) ||
+          key.contains(id) ||
+          repoField == key) {
         match = r;
         break;
       }
@@ -183,18 +222,23 @@ class _CommunityPageState extends State<CommunityPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: _card,
-        title: const Text('Desinstalar', style: TextStyle(color: Colors.white)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Desinstalar repositorio',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        ),
         content: Text(
-          '¿Desinstalar ${item.name}?',
+          '¿Seguro que quieres desinstalar «$title»?',
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
+            child: const Text('Cancelar',
+                style: TextStyle(color: Colors.white70)),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: _accent),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Desinstalar'),
           ),
@@ -229,10 +273,8 @@ class _CommunityPageState extends State<CommunityPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.white24),
-            const SizedBox(height: 16),
             Text(_error!, style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             FilledButton(onPressed: _load, child: const Text('Reintentar')),
           ],
         ),
@@ -240,24 +282,31 @@ class _CommunityPageState extends State<CommunityPage> {
     }
 
     final list = _filtered;
+    final width = MediaQuery.sizeOf(context).width;
+    final cross = width >= 1200
+        ? 4
+        : width >= 900
+            ? 3
+            : 2;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Search bar
         Padding(
-          padding: const EdgeInsets.fromLTRB(32, 20, 32, 8),
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
           child: TextField(
             controller: _searchCtrl,
             onChanged: (v) => setState(() => _query = v),
             style: const TextStyle(color: Colors.white),
             decoration: InputDecoration(
-              hintText: 'Buscar repositorios...',
+              hintText: 'Buscar repositorios…',
               hintStyle: const TextStyle(color: Colors.white38),
-              prefixIcon: const Icon(Icons.search_rounded, color: Colors.white38),
+              prefixIcon:
+                  const Icon(Icons.search_rounded, color: Colors.white38),
               suffixIcon: _query.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(Icons.clear_rounded, color: Colors.white38),
+                      icon: const Icon(Icons.clear_rounded,
+                          color: Colors.white38),
                       onPressed: () {
                         _searchCtrl.clear();
                         setState(() => _query = '');
@@ -265,48 +314,49 @@ class _CommunityPageState extends State<CommunityPage> {
                     )
                   : null,
               filled: true,
-              fillColor: const Color(0xFF1A1F2A),
+              fillColor: Colors.white.withValues(alpha: 0.06),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide.none,
               ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             ),
           ),
         ),
-
-        // Count
         Padding(
-          padding: const EdgeInsets.fromLTRB(32, 8, 32, 12),
+          padding: const EdgeInsets.fromLTRB(24, 4, 24, 10),
           child: Text(
             '${list.length} repositorio${list.length == 1 ? '' : 's'}',
             style: const TextStyle(color: Colors.white54, fontSize: 13),
           ),
         ),
-
-        // Grid
         Expanded(
           child: list.isEmpty
               ? const Center(
-                  child: Text('No se encontraron repositorios', style: TextStyle(color: Colors.white38)),
+                  child: Text(
+                    'No se encontraron repositorios',
+                    style: TextStyle(color: Colors.white38),
+                  ),
                 )
               : GridView.builder(
-                  padding: const EdgeInsets.fromLTRB(32, 0, 32, 40),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 320,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
-                    childAspectRatio: 1.55,
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 36),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: cross,
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    // Compactas: logo + título + botón
+                    childAspectRatio: cross >= 3 ? 1.7 : 1.55,
                   ),
                   itemCount: list.length,
                   itemBuilder: (context, i) {
                     final item = list[i];
-                    final installed = _isInstalled(item.repo);
-                    final icon = _iconCache[item.repo];
                     return _CommunityCard(
-                      item: item,
-                      iconUrl: icon,
-                      installed: installed,
+                      title: _titleFor(item),
+                      author: displayAuthor(item.repo),
+                      iconUrl: _iconCache[item.repo] ?? item.avatarUrl,
+                      stars: item.stars,
+                      installed: _isInstalled(item.repo),
                       onInstall: () => _install(item),
                       onUninstall: () => _uninstall(item),
                     );
@@ -319,15 +369,19 @@ class _CommunityPageState extends State<CommunityPage> {
 }
 
 class _CommunityCard extends StatefulWidget {
-  final CommunityRepoItem item;
+  final String title;
+  final String author;
   final String? iconUrl;
+  final int stars;
   final bool installed;
   final VoidCallback onInstall;
   final VoidCallback onUninstall;
 
   const _CommunityCard({
-    required this.item,
+    required this.title,
+    required this.author,
     required this.iconUrl,
+    required this.stars,
     required this.installed,
     required this.onInstall,
     required this.onUninstall,
@@ -348,69 +402,160 @@ class _CommunityCardState extends State<_CommunityCard> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         decoration: BoxDecoration(
-          color: _card,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: _hover ? _accent.withValues(alpha: 0.5) : _border),
+          border: Border.all(
+            color: _hover
+                ? _accent.withValues(alpha: 0.5)
+                : Colors.white.withValues(alpha: 0.08),
+          ),
         ),
-        clipBehavior: Clip.antiAlias,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Imagen arriba
-            Expanded(
-              child: widget.iconUrl != null && widget.iconUrl!.isNotEmpty
-                  ? CachedNetworkImage(
-                      imageUrl: widget.iconUrl!,
-                      fit: BoxFit.cover,
-                      errorWidget: (_, __, ___) => _iconPlaceholder(),
-                    )
-                  : _iconPlaceholder(),
-            ),
-            // Título + botón
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.07),
+                    const Color(0xFF12161E).withValues(alpha: 0.95),
+                  ],
+                ),
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text(
-                    widget.item.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  if (widget.installed)
-                    OutlinedButton(
-                      onPressed: widget.onUninstall,
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.redAccent,
-                        side: const BorderSide(color: Colors.redAccent),
+                  Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.1),
+                          ),
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: widget.iconUrl != null &&
+                                widget.iconUrl!.isNotEmpty
+                            ? CachedNetworkImage(
+                                imageUrl: widget.iconUrl!,
+                                fit: BoxFit.cover,
+                                errorWidget: (_, __, ___) => _fallback(),
+                              )
+                            : _fallback(),
                       ),
-                      child: const Text('Desinstalar'),
-                    )
-                  else
-                    FilledButton(
-                      onPressed: widget.onInstall,
-                      style: FilledButton.styleFrom(backgroundColor: _accent),
-                      child: const Text('Instalar'),
-                    ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.author,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.45),
+                                fontSize: 11.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (widget.stars > 0)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.star_rounded,
+                                size: 14, color: Color(0xFFFFC857)),
+                            const SizedBox(width: 2),
+                            Text(
+                              '${widget.stars}',
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                  const Spacer(),
+                  SizedBox(
+                    height: 40,
+                    width: double.infinity,
+                    child: widget.installed
+                        ? OutlinedButton(
+                            onPressed: widget.onUninstall,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.redAccent,
+                              side: const BorderSide(
+                                  color: Colors.redAccent, width: 1.4),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                            ),
+                            child: const Text(
+                              'Desinstalar',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                          )
+                        : FilledButton(
+                            onPressed: widget.onInstall,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: _accent,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                            ),
+                            child: const Text(
+                              'Instalar',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                          ),
+                  ),
                 ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _iconPlaceholder() {
+  Widget _fallback() {
+    final t = widget.title;
     return Container(
-      color: const Color(0xFF12151C),
-      child: const Center(child: Icon(Icons.extension_rounded, color: Colors.white24, size: 40)),
+      color: const Color(0xFF1A222D),
+      alignment: Alignment.center,
+      child: Text(
+        t.isNotEmpty ? t[0].toUpperCase() : '?',
+        style: const TextStyle(
+          color: Colors.white54,
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
     );
   }
 }

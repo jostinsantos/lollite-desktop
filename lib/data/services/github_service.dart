@@ -116,13 +116,24 @@ class GithubService {
     return null;
   }
 
-  /// Descarga texto de raw.githubusercontent.com
+  /// Descarga texto de raw.githubusercontent.com (UTF-8 seguro en Windows).
   Future<String> fetchRaw(String url) async {
-    final res = await http.get(Uri.parse(url), headers: {'User-Agent': _userAgent})
+    final res = await http
+        .get(
+          Uri.parse(url),
+          headers: {
+            'User-Agent': _userAgent,
+            'Accept': 'application/json, text/plain, */*',
+          },
+        )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) {
-      throw Exception('No se pudo descargar ($res.statusCode): $url');
+      throw Exception('No se pudo descargar (${res.statusCode}): $url');
     }
-    return res.body;
+    try {
+      return utf8.decode(res.bodyBytes, allowMalformed: true);
+    } catch (_) {
+      return res.body;
+    }
   }
 }

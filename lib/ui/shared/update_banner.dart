@@ -191,10 +191,13 @@ Future<void> _downloadAndInstall(
         parche: info.parche,
         url: desktopUrl,
       );
+      await VersionService.instance.markUpdatePending(
+        versionLabel: '${info.version} · ${info.parche}',
+      );
       final ok = await VersionService.instance.applyDesktopUpdate(file);
       if (ok) {
         // Cierra la app para que el script/instalador reemplace y reinicie
-        await Future<void>.delayed(const Duration(milliseconds: 400));
+        await Future<void>.delayed(const Duration(milliseconds: 800));
         exit(0);
       }
       if (context.mounted) {
@@ -557,7 +560,10 @@ class _UpdateGateState extends State<UpdateGate> {
       );
 
       if (isDesktop) {
-        final ok = await VersionService.instance.applyDesktopUpdate(file);
+        await VersionService.instance.markUpdatePending(
+        versionLabel: '${info.version} · ${info.parche}',
+      );
+      final ok = await VersionService.instance.applyDesktopUpdate(file);
         if (!mounted) return;
         setState(() => _busy = false);
         if (ok) {
@@ -868,7 +874,7 @@ class _UpdateModalState extends State<_UpdateModal> {
           const SizedBox(width: 8),
           _TvFocusButton(
             focusNode: _downloadFocus,
-            label: 'Descargar APK',
+            label: 'Descargar',
             primary: true,
             enabled: url.isNotEmpty,
             onPressed: url.isEmpty
@@ -1003,4 +1009,3 @@ class _TvFocusButtonState extends State<_TvFocusButton> {
     );
   }
 }
-

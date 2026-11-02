@@ -97,6 +97,12 @@ class _DetailsPageState extends State<DetailsPage> {
 
   Future<void> _ensureSeasonEpisodes(int seasonNumber) async {
     if (_loadedSeasons.contains(seasonNumber) || _item == null) return;
+    // Si la temporada ya trae episodios del primer getDetails, no re-pedir
+    final existing = _item!.seasons.where((s) => s.number == seasonNumber);
+    if (existing.isNotEmpty && existing.first.episodes.isNotEmpty) {
+      _loadedSeasons.add(seasonNumber);
+      return;
+    }
     setState(() => _loadingSeason = true);
     try {
       final updated = await ContentService.instance.getDetails(
@@ -146,7 +152,8 @@ class _DetailsPageState extends State<DetailsPage> {
       } else {
         final list = lib.continueWatching(widget.repo.manifest.id);
         for (final e in list) {
-          if (e.contentId == widget.itemId && e.positionMs > 1500 &&
+          if (e.contentId == widget.itemId &&
+              e.positionMs > 1500 &&
               (e.durationMs <= 0 || e.positionMs / e.durationMs < 0.9)) {
             _watchPosMs = e.positionMs;
             _watchDurMs = e.durationMs;
@@ -332,7 +339,6 @@ class _DetailsPageState extends State<DetailsPage> {
     if (item == null) return false;
     final typed = item.seasons.isNotEmpty || item.type == 'series' || item.type == 'tv';
     if (!typed) return false;
-    // Un solo capítulo → tratar como película (misma UX)
     var totalEps = 0;
     for (final s in item.seasons) {
       totalEps += s.episodes.length;
@@ -366,10 +372,10 @@ class _DetailsPageState extends State<DetailsPage> {
     }
 
     final item = _item!;
-    // Escuchar descargas para actualizar iconos
     try {
       context.watch<DownloadService>();
     } catch (_) {}
+
     if (_showEpisodes && _isSeries) {
       return _EpisodesView(
         item: item,
@@ -430,12 +436,72 @@ class _DetailsPageState extends State<DetailsPage> {
         }
       },
       onFavorite: _toggleFavorite,
-      // Series: solo Reproducir / Capítulos / Favorito (descarga y transmitir van en cada capítulo)
       downloadButton: downloadsOn && !_isSeries
           ? _downloadIconButton(onPressed: () => _downloadItem())
           : null,
-      transmitButton: null, // Transmitir desactivado
+      transmitButton: null,
       onEpisodes: _isSeries ? () => setState(() => _showEpisodes = true) : null,
+    );
+  }
+}
+
+/// Logo siempre anclado a la izquierda (sin saltar al centro mientras carga).
+class _LeftLogo extends StatelessWidget {
+  final String? logoUrl;
+  final String title;
+  final double height;
+
+  const _LeftLogo({
+    required this.logoUrl,
+    required this.title,
+    this.height = 72,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final url = logoUrl?.trim() ?? '';
+    // Ancho máximo estable a la izquierda; el contenido se alinea a start
+    return SizedBox(
+      height: height,
+      width: 320,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: url.isEmpty
+            ? Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.left,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 32,
+                  fontWeight: FontWeight.w800,
+                  height: 1.15,
+                ),
+              )
+            : CachedNetworkImage(
+                imageUrl: url,
+                height: height,
+                // Importante: no centrar el bitmap dentro del box
+                alignment: Alignment.centerLeft,
+                fit: BoxFit.contain,
+                fadeInDuration: Duration.zero,
+                fadeOutDuration: Duration.zero,
+                placeholder: (_, __) => const SizedBox.shrink(),
+                errorWidget: (_, __, ___) => Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.left,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.w800,
+                    height: 1.15,
+                  ),
+                ),
+              ),
+      ),
     );
   }
 }
@@ -499,7 +565,6 @@ class _InfoView extends StatelessWidget {
               ),
             ),
           ),
-          // Botón atrás
           SafeArea(
             child: Align(
               alignment: Alignment.topLeft,
@@ -516,7 +581,6 @@ class _InfoView extends StatelessWidget {
               ),
             ),
           ),
-          // Info abajo izquierda
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(48, 24, 48, 40),
@@ -528,35 +592,8 @@ class _InfoView extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (item.logo != null && item.logo!.isNotEmpty)
-                        SizedBox(
-                          height: 72,
-                          child: CachedNetworkImage(
-                            imageUrl: item.logo!,
-                            fit: BoxFit.contain,
-                            alignment: Alignment.centerLeft,
-                            errorWidget: (_, __, ___) => Text(
-                              item.title,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 32,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                        )
-                      else
-                        Text(
-                          item.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 32,
-                            fontWeight: FontWeight.w800,
-                            height: 1.15,
-                          ),
-                        ),
+                      // Logo fijo a la izquierda (no salta al centro)
+                      _LeftLogo(logoUrl: item.logo, title: item.title, height: 72),
                       const SizedBox(height: 12),
                       Wrap(
                         spacing: 12,
@@ -570,13 +607,19 @@ class _InfoView extends StatelessWidget {
                               children: [
                                 const Icon(Icons.star_rounded, size: 16, color: Colors.amber),
                                 const SizedBox(width: 4),
-                                Text(item.rating!.toStringAsFixed(1),
-                                    style: const TextStyle(color: Colors.white70)),
+                                Text(
+                                  item.rating!.toStringAsFixed(1),
+                                  style: const TextStyle(color: Colors.white70),
+                                ),
                               ],
                             ),
                           Text(
                             item.type.toUpperCase(),
-                            style: const TextStyle(color: Colors.white54, fontSize: 12, letterSpacing: 0.5),
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                              letterSpacing: 0.5,
+                            ),
                           ),
                         ],
                       ),
@@ -586,7 +629,11 @@ class _InfoView extends StatelessWidget {
                           item.overview ?? '',
                           maxLines: 4,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white70, height: 1.4, fontSize: 14.5),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            height: 1.4,
+                            fontSize: 14.5,
+                          ),
                         ),
                       ],
                       const SizedBox(height: 22),
@@ -642,7 +689,7 @@ class _InfoView extends StatelessWidget {
   }
 }
 
-/// Vista de capítulos tipo TV: temporadas a la izquierda, episodios a la derecha.
+/// Vista de capítulos: AppBar principal + temporadas | episodios.
 class _EpisodesView extends StatelessWidget {
   final ContentItem item;
   final int seasonIndex;
@@ -676,6 +723,32 @@ class _EpisodesView extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: _bg,
+      // Barra principal de la ventana (siempre visible en capítulos)
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0E1116),
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
+        leading: IconButton(
+          tooltip: 'Volver',
+          onPressed: onBack,
+          icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+        ),
+        title: Text(
+          item.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+            fontSize: 17,
+          ),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 1, color: _border),
+        ),
+      ),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -687,7 +760,6 @@ class _EpisodesView extends StatelessWidget {
                 errorWidget: (_, __, ___) => const ColoredBox(color: _bg),
               ),
             ),
-          // Blur + oscurecido para legibilidad
           Positioned.fill(
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
@@ -696,194 +768,170 @@ class _EpisodesView extends StatelessWidget {
               ),
             ),
           ),
-          Column(
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SafeArea(
-                bottom: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        onPressed: onBack,
-                        icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          item.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 18,
-                          ),
+              // Temporadas
+              Container(
+                width: 200,
+                decoration: const BoxDecoration(
+                  color: Color(0xCC0B0D10),
+                  border: Border(right: BorderSide(color: _border)),
+                ),
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: seasons.length,
+                  itemBuilder: (context, i) {
+                    final s = seasons[i];
+                    final active = i == safeIdx;
+                    return ListTile(
+                      selected: active,
+                      selectedTileColor: _accent.withValues(alpha: 0.15),
+                      title: Text(
+                        'Temporada ${s.number}',
+                        style: TextStyle(
+                          color: active ? _accent : Colors.white,
+                          fontWeight: active ? FontWeight.w700 : FontWeight.w500,
                         ),
                       ),
-                    ],
-                  ),
+                      subtitle: s.name != null &&
+                              s.name!.isNotEmpty &&
+                              s.name != 'Temporada ${s.number}'
+                          ? Text(
+                              s.name!,
+                              style: const TextStyle(color: Colors.white38, fontSize: 12),
+                            )
+                          : null,
+                      onTap: () => onSelectSeason(i),
+                    );
+                  },
                 ),
               ),
+              // Episodios
               Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Temporadas
-                    Container(
-                      width: 200,
-                      decoration: const BoxDecoration(
-                        border: Border(right: BorderSide(color: _border)),
-                      ),
-                      child: ListView.builder(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        itemCount: seasons.length,
-                        itemBuilder: (context, i) {
-                          final s = seasons[i];
-                          final active = i == safeIdx;
-                          return ListTile(
-                            selected: active,
-                            selectedTileColor: _accent.withValues(alpha: 0.15),
-                            title: Text(
-                              'Temporada ${s.number}',
-                              style: TextStyle(
-                                color: active ? _accent : Colors.white,
-                                fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                              ),
-                            ),
-                            subtitle: s.name != null && s.name!.isNotEmpty
-                                ? Text(s.name!, style: const TextStyle(color: Colors.white38, fontSize: 12))
-                                : null,
-                            onTap: () => onSelectSeason(i),
-                          );
-                        },
-                      ),
-                    ),
-                    // Episodios
-                    Expanded(
-                      child: loadingSeason
-                          ? const Center(child: CircularProgressIndicator(color: _accent))
-                          : eps.isEmpty
-                              ? const Center(
-                                  child: Text('Sin episodios', style: TextStyle(color: Colors.white38)),
-                                )
-                              : ListView.separated(
-                                  padding: const EdgeInsets.all(20),
-                                  itemCount: eps.length,
-                                  separatorBuilder: (_, __) => const SizedBox(height: 10),
-                                  itemBuilder: (context, i) {
-                                    final ep = eps[i];
-                                    return Material(
-                                      color: _card,
-                                      borderRadius: BorderRadius.circular(12),
-                                      child: InkWell(
-                                        borderRadius: BorderRadius.circular(12),
-                                        onTap: () => onPlayEpisode(season!.number, ep.number),
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(12),
-                                          child: Row(
+                child: loadingSeason
+                    ? const Center(child: CircularProgressIndicator(color: _accent))
+                    : eps.isEmpty
+                        ? const Center(
+                            child: Text('Sin episodios', style: TextStyle(color: Colors.white38)),
+                          )
+                        : ListView.separated(
+                            padding: const EdgeInsets.all(20),
+                            itemCount: eps.length,
+                            separatorBuilder: (_, __) => const SizedBox(height: 10),
+                            itemBuilder: (context, i) {
+                              final ep = eps[i];
+                              return Material(
+                                color: _card,
+                                borderRadius: BorderRadius.circular(12),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(12),
+                                  onTap: () => onPlayEpisode(season!.number, ep.number),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          width: 40,
+                                          height: 40,
+                                          alignment: Alignment.center,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withValues(alpha: 0.06),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Text(
+                                            '${ep.number}',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                              color: Colors.white70,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        if (ep.still != null && ep.still!.isNotEmpty) ...[
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(8),
+                                            child: SizedBox(
+                                              width: 120,
+                                              height: 68,
+                                              child: CachedNetworkImage(
+                                                imageUrl: ep.still!,
+                                                fit: BoxFit.cover,
+                                                errorWidget: (_, __, ___) =>
+                                                    Container(color: const Color(0xFF12151C)),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                        ],
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
-                                              Container(
-                                                width: 40,
-                                                height: 40,
-                                                alignment: Alignment.center,
-                                                decoration: BoxDecoration(
-                                                  color: Colors.white.withValues(alpha: 0.06),
-                                                  borderRadius: BorderRadius.circular(8),
+                                              Text(
+                                                (ep.title != null && ep.title!.isNotEmpty)
+                                                    ? ep.title!
+                                                    : 'Episodio ${ep.number}',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 14.5,
                                                 ),
-                                                child: Text(
-                                                  '${ep.number}',
+                                              ),
+                                              if ((ep.overview ?? '').isNotEmpty) ...[
+                                                const SizedBox(height: 3),
+                                                Text(
+                                                  ep.overview!,
+                                                  maxLines: 2,
+                                                  overflow: TextOverflow.ellipsis,
                                                   style: const TextStyle(
-                                                    fontWeight: FontWeight.w700,
-                                                    color: Colors.white70,
+                                                    color: Colors.white54,
+                                                    fontSize: 12.5,
+                                                    height: 1.3,
                                                   ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              if (ep.still != null && ep.still!.isNotEmpty) ...[
-                                                ClipRRect(
-                                                  borderRadius: BorderRadius.circular(8),
-                                                  child: SizedBox(
-                                                    width: 120,
-                                                    height: 68,
-                                                    child: CachedNetworkImage(
-                                                      imageUrl: ep.still!,
-                                                      fit: BoxFit.cover,
-                                                      errorWidget: (_, __, ___) =>
-                                                          Container(color: const Color(0xFF12151C)),
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 12),
                                               ],
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      (ep.title != null && ep.title!.isNotEmpty)
-                                                          ? ep.title!
-                                                          : 'Episodio ${ep.number}',
-                                                      maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
-                                                      style: const TextStyle(
-                                                        color: Colors.white,
-                                                        fontWeight: FontWeight.w600,
-                                                        fontSize: 14.5,
-                                                      ),
-                                                    ),
-                                                    if ((ep.overview ?? '').isNotEmpty) ...[
-                                                      const SizedBox(height: 3),
-                                                      Text(
-                                                        ep.overview!,
-                                                        maxLines: 2,
-                                                        overflow: TextOverflow.ellipsis,
-                                                        style: const TextStyle(
-                                                          color: Colors.white54,
-                                                          fontSize: 12.5,
-                                                          height: 1.3,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ],
-                                                ),
-                                              ),
-                                              if (onTransmitEpisode != null)
-                                                IconButton(
-                                                  tooltip: 'Transmitir',
-                                                  onPressed: () => onTransmitEpisode!(
-                                                    season!.number,
-                                                    ep.number,
-                                                    ep.title,
-                                                    ep.id,
-                                                  ),
-                                                  icon: const Icon(Icons.cast_rounded, color: Colors.white54),
-                                                ),
-                                              if (onDownloadEpisode != null)
-                                                IconButton(
-                                                  tooltip: 'Descargar',
-                                                  onPressed: () => onDownloadEpisode!(
-                                                    season!.number,
-                                                    ep.number,
-                                                    ep.title,
-                                                    ep.id,
-                                                  ),
-                                                  icon: downloadIconBuilder != null
-                                                      ? downloadIconBuilder!(season!.number, ep.number)
-                                                      : const Icon(Icons.download_rounded, color: Colors.white54),
-                                                ),
-                                              const Icon(Icons.play_circle_outline_rounded,
-                                                  color: Colors.white38, size: 28),
                                             ],
                                           ),
                                         ),
-                                      ),
-                                    );
-                                  },
+                                        if (onTransmitEpisode != null)
+                                          IconButton(
+                                            tooltip: 'Transmitir',
+                                            onPressed: () => onTransmitEpisode!(
+                                              season!.number,
+                                              ep.number,
+                                              ep.title,
+                                              ep.id,
+                                            ),
+                                            icon: const Icon(Icons.cast_rounded, color: Colors.white54),
+                                          ),
+                                        if (onDownloadEpisode != null)
+                                          IconButton(
+                                            tooltip: 'Descargar',
+                                            onPressed: () => onDownloadEpisode!(
+                                              season!.number,
+                                              ep.number,
+                                              ep.title,
+                                              ep.id,
+                                            ),
+                                            icon: downloadIconBuilder != null
+                                                ? downloadIconBuilder!(season!.number, ep.number)
+                                                : const Icon(Icons.download_rounded, color: Colors.white54),
+                                          ),
+                                        const Icon(
+                                          Icons.play_circle_outline_rounded,
+                                          color: Colors.white38,
+                                          size: 28,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
-                    ),
-                  ],
-                ),
+                              );
+                            },
+                          ),
               ),
             ],
           ),

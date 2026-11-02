@@ -7,6 +7,7 @@ import 'descubrir/descubrir.dart';
 import 'buscar/buscar.dart';
 import 'biblioteca/biblioteca.dart';
 import 'config/config.dart';
+import 'live/live.dart';
 
 const _bg = Color(0xFF0B0D10);
 const _sidebarBg = Color(0xFF0F1218);
@@ -72,6 +73,14 @@ class _RepoMainHomeState extends State<RepoMainHome> {
             icon: Icons.search_rounded,
             selectedIcon: Icons.search_rounded,
             label: 'Buscar',
+          ));
+        case 'live':
+          out.add((
+            id: id,
+            page: RepoLivePage(repo: repo),
+            icon: Icons.live_tv_outlined,
+            selectedIcon: Icons.live_tv_rounded,
+            label: 'TV Online',
           ));
         case 'library':
           out.add((

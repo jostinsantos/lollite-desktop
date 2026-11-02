@@ -18,8 +18,8 @@ class VersionService {
   // ============================================
   // CONFIGURA AQUÍ LA VERSIÓN ACTUAL DE TU APP
   // ============================================
-  static const String currentVersionName = '0.0.2'; // version (debe coincidir con pubspec / build)
-  static const String currentParche = '010'; // parche local (comparar con remoto lollite.json)
+  static const String currentVersionName = '0.1.2'; // version (debe coincidir con pubspec / build)
+  static const String currentParche = '012'; // parche local (comparar con remoto lollite.json)
   static const String appId = 'lollitedes';
 
   static const String manifestUrl =
@@ -381,26 +381,136 @@ class VersionService {
     }
   }
 
-  /// Aplica actualización en Windows sin perder datos de usuario.
+  /// Carpeta estable portable: %LOCALAPPDATA%\LOLLite
+  Future<String> portableInstallDirectory() async {
+    final local = Platform.environment['LOCALAPPDATA'] ??
+        Platform.environment['USERPROFILE'] ??
+        (await getTemporaryDirectory()).path;
+    final dir = Directory('$local${Platform.pathSeparator}LOLLite');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir.path;
+  }
+
+  /// Ejecutándose desde build\windows\...\runner\Debug|Release
+  bool get isRunningFromFlutterBuild {
+    final d = (installDirectory ?? '').toLowerCase().replaceAll('/', '\\');
+    return d.contains(r'\build\windows\') ||
+        d.endsWith(r'\runner\debug') ||
+        d.endsWith(r'\runner\release') ||
+        d.endsWith(r'\runner\profile');
+  }
+
+  /// Acceso directo en el Escritorio.
+  Future<bool> createDesktopShortcut({String? targetExe}) async {
+    lastInstallError = null;
+    if (!Platform.isWindows) {
+      lastInstallError = 'Solo Windows';
+      return false;
+    }
+    try {
+      final exe = targetExe ?? Platform.resolvedExecutable;
+      final workDir = File(exe).parent.path;
+      final user = Platform.environment['USERPROFILE'];
+      if (user == null || user.isEmpty) {
+        lastInstallError = 'No se pudo localizar el Escritorio';
+        return false;
+      }
+      final linkPath =
+          '$user${Platform.pathSeparator}Desktop${Platform.pathSeparator}LOL Lite.lnk';
+      final ps = '''
+\$ws = New-Object -ComObject WScript.Shell
+\$sc = \$ws.CreateShortcut('${linkPath.replaceAll("'", "''")}')
+\$sc.TargetPath = '${exe.replaceAll("'", "''")}'
+\$sc.WorkingDirectory = '${workDir.replaceAll("'", "''")}'
+\$sc.Description = 'LOL Lite Desktop'
+\$sc.Save()
+''';
+      final r = await Process.run(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          ps,
+        ],
+      ).timeout(const Duration(seconds: 15));
+      if (r.exitCode != 0) {
+        lastInstallError =
+            '${r.stderr}'.trim().isNotEmpty ? '${r.stderr}'.trim() : 'Error creando acceso directo';
+        return false;
+      }
+      return true;
+    } catch (e) {
+      lastInstallError = e.toString();
+      return false;
+    }
+  }
+
+
+  static const _kUpdatePending = 'update_just_applied';
+  static const _kUpdatePendingVer = 'update_just_applied_version';
+
+  /// Marca que se va a aplicar una actualización (mensaje al reabrir).
+  Future<void> markUpdatePending({String? versionLabel}) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool(_kUpdatePending, true);
+      if (versionLabel != null && versionLabel.isNotEmpty) {
+        await p.setString(_kUpdatePendingVer, versionLabel);
+      }
+    } catch (e) {
+      debugPrint('[Version] markUpdatePending: $e');
+    }
+  }
+
+  /// Si hubo update, limpia la marca y devuelve el texto de versión (o '').
+  Future<String?> consumeUpdateSuccessMessage() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final pending = p.getBool(_kUpdatePending) ?? false;
+      if (!pending) return null;
+      await p.setBool(_kUpdatePending, false);
+      final ver = p.getString(_kUpdatePendingVer) ?? '';
+      await p.remove(_kUpdatePendingVer);
+      return ver;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Actualización in-place para instalación Inno / portable.
+  ///
+  /// Flujo:
+  /// 1. Extrae el ZIP a carpeta temporal.
+  /// 2. Lanza un script DETACHED que:
+  ///    - Espera a que este proceso muera.
+  ///    - Mata otros lollite.
+  ///    - Copia TODO sobre la carpeta de instalación del usuario
+  ///      (%LOCALAPPDATA%\LOLLite o donde esté el .exe actual).
+  ///    - Actualiza accesos directos y registro "Iniciar con Windows".
+  ///    - Reinicia lollite.exe.
+  ///
+  /// El ZIP debe contener lollite.exe + data\ (y dlls) en la raíz
+  /// o dentro de UNA sola subcarpeta.
   Future<bool> applyDesktopUpdate(File package) async {
     lastInstallError = null;
     if (!Platform.isWindows) {
       lastInstallError = 'Auto-actualización desktop solo en Windows';
       return false;
     }
-    final appDir = installDirectory;
-    final exePath = Platform.resolvedExecutable;
-    if (appDir == null || appDir.isEmpty) {
-      lastInstallError = 'No se pudo localizar la carpeta de la app';
-      return false;
-    }
 
     final path = package.path;
     final lower = path.toLowerCase();
     final myPid = pid;
+    final tmp = await getTemporaryDirectory();
     final logPath =
-        '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}lollitedes_update.log';
+        '${tmp.path}${Platform.pathSeparator}lollitedes_update.log';
 
+    // Instalador .exe suelto → lanzarlo y salir
     if (lower.endsWith('.exe')) {
       try {
         await File(logPath).writeAsString('Launching installer: $path\n');
@@ -408,7 +518,6 @@ class VersionService {
           path,
           const <String>[],
           mode: ProcessStartMode.detached,
-          workingDirectory: appDir,
         );
         return true;
       } catch (e) {
@@ -419,142 +528,256 @@ class VersionService {
 
     if (!lower.endsWith('.zip')) {
       lastInstallError =
-          'Formato no soportado. Publica un .zip portable o instalador .exe';
+          'Formato no soportado. Usa un .zip (lollite.exe + data/).';
       return false;
     }
 
     try {
-      final tmp = await getTemporaryDirectory();
-      final extractDir =
-          Directory('${tmp.path}${Platform.pathSeparator}lollitedes_extract');
+      // Destino = carpeta real de instalación del usuario
+      final String targetDir;
+      if (isRunningFromFlutterBuild) {
+        targetDir = await portableInstallDirectory();
+      } else {
+        targetDir = installDirectory ?? await portableInstallDirectory();
+      }
+      debugPrint('[Version] update targetDir=$targetDir');
+
+      // Extraer ZIP
+      final extractDir = Directory(
+          '${tmp.path}${Platform.pathSeparator}lollitedes_extract');
       if (await extractDir.exists()) {
-        await extractDir.delete(recursive: true);
+        try {
+          await extractDir.delete(recursive: true);
+        } catch (_) {}
       }
       await extractDir.create(recursive: true);
 
       var extracted = false;
       try {
-        final r =
-            await Process.run('tar', ['-xf', path, '-C', extractDir.path]);
-        extracted = r.exitCode == 0;
-      } catch (e) {
-        debugPrint('[Version] tar: $e');
-      }
-      if (!extracted) {
-        final srcPs = path.replaceAll("'", "''");
-        final dstPs = extractDir.path.replaceAll("'", "''");
-        final r = await Process.run('powershell', [
+        final r = await Process.run('powershell.exe', [
           '-NoProfile',
+          '-NonInteractive',
           '-ExecutionPolicy',
           'Bypass',
           '-Command',
-          "Expand-Archive -LiteralPath '$srcPs' -DestinationPath '$dstPs' -Force",
-        ]);
+          "Expand-Archive -LiteralPath '${path.replaceAll("'", "''")}' "
+              "-DestinationPath '${extractDir.path.replaceAll("'", "''")}' -Force",
+        ]).timeout(const Duration(minutes: 15));
         extracted = r.exitCode == 0;
         if (!extracted) {
-          lastInstallError =
-              'No se pudo extraer el ZIP: ${r.stderr}'.toString().trim();
-          return false;
+          debugPrint('[Version] Expand-Archive stderr: ${r.stderr}');
+        }
+      } catch (e) {
+        debugPrint('[Version] Expand-Archive: $e');
+      }
+      if (!extracted) {
+        try {
+          final r = await Process.run(
+            'tar',
+            ['-xf', path, '-C', extractDir.path],
+          ).timeout(const Duration(minutes: 15));
+          extracted = r.exitCode == 0;
+        } catch (e) {
+          debugPrint('[Version] tar: $e');
         }
       }
+      if (!extracted) {
+        lastInstallError = 'No se pudo extraer el ZIP de actualización';
+        return false;
+      }
 
-      var sourceDir = extractDir;
-      final kids = extractDir.listSync().where((e) {
-        final n = e.uri.pathSegments.isNotEmpty
-            ? e.uri.pathSegments.last.toLowerCase()
-            : '';
-        return n != '__macosx' && n != '.ds_store';
-      }).toList();
+      // Localizar carpeta que contiene el .exe
+      Directory sourceDir = extractDir;
+      final kids = extractDir
+          .listSync()
+          .where((e) {
+            final n = e.uri.pathSegments.isNotEmpty
+                ? e.uri.pathSegments.last.toLowerCase()
+                : '';
+            return n != '__macosx' && n != '.ds_store';
+          })
+          .toList();
       if (kids.length == 1 && kids.first is Directory) {
         sourceDir = kids.first as Directory;
       }
-      // Buscar carpeta que contenga .exe
-      final hasExe = sourceDir.listSync().any(
-          (e) => e is File && e.path.toLowerCase().endsWith('.exe'));
-      if (!hasExe) {
+      bool hasExe(Directory d) => d.listSync().any(
+            (e) => e is File && e.path.toLowerCase().endsWith('.exe'),
+          );
+      if (!hasExe(sourceDir)) {
         for (final k in sourceDir.listSync()) {
-          if (k is! Directory) continue;
-          final inner = k.listSync().any(
-              (e) => e is File && e.path.toLowerCase().endsWith('.exe'));
-          if (inner) {
+          if (k is Directory && hasExe(k)) {
             sourceDir = k;
             break;
           }
         }
       }
+      if (!hasExe(sourceDir)) {
+        lastInstallError =
+            'El ZIP no contiene ningún .exe (¿empaquetado mal?)';
+        return false;
+      }
 
-      final exeName = File(exePath).uri.pathSegments.last;
-      final bat = File(
-          '${tmp.path}${Platform.pathSeparator}lollitedes_apply_update.bat');
       final src = sourceDir.path;
+      final targetExe = '$targetDir${Platform.pathSeparator}lollite.exe';
+      final batPath =
+          '${tmp.path}${Platform.pathSeparator}lollitedes_apply_update.cmd';
+      final ps1Path =
+          '${tmp.path}${Platform.pathSeparator}lollitedes_apply_update.ps1';
 
-      final batLines = <String>[
-        '@echo off',
-        'setlocal EnableExtensions',
-        'set "APPDIR=$appDir"',
-        'set "SRC=$src"',
-        'set "EXE=$exePath"',
-        'set "EXENAME=$exeName"',
-        'set "PID=$myPid"',
-        'set "LOG=$logPath"',
-        'echo ==== LOL Lite Update ==== >> "%LOG%"',
-        'echo APPDIR=%APPDIR% >> "%LOG%"',
-        'echo SRC=%SRC% >> "%LOG%"',
-        'echo EXE=%EXE% >> "%LOG%"',
-        'echo PID=%PID% >> "%LOG%"',
-        'echo Esperando cierre de la app...',
-        'echo Esperando cierre... >> "%LOG%"',
-        'set /a TRIES=0',
-        ':waitloop',
-        'set /a TRIES+=1',
-        'if %TRIES% GTR 40 (',
-        '  echo Timeout, continuo... >> "%LOG%"',
-        '  goto copyfiles',
-        ')',
-        'timeout /t 1 /nobreak >nul',
-        'tasklist /FI "PID eq %PID%" 2>nul | findstr /I "%PID%" >nul',
-        'if %ERRORLEVEL%==0 goto waitloop',
-        ':copyfiles',
-        'echo Copiando archivos a la carpeta de la app...',
-        'echo Copiando... >> "%LOG%"',
-        'where robocopy >nul 2>nul',
-        'if %ERRORLEVEL%==0 (',
-        '  robocopy "%SRC%" "%APPDIR%" /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS >> "%LOG%" 2>&1',
-        '  set RC=!ERRORLEVEL!',
-        '  echo robocopy RC=!RC! >> "%LOG%"',
-        ') else (',
-        '  xcopy /E /Y /I /Q "%SRC%\*" "%APPDIR%\" >> "%LOG%" 2>&1',
-        ')',
-        'echo Reiniciando... >> "%LOG%"',
-        'if exist "%EXE%" (',
-        '  start "" "%EXE%"',
-        ') else (',
-        '  echo No se encontro el ejecutable %EXE% >> "%LOG%"',
-        '  echo ERROR: no se encontro el ejecutable',
-        '  timeout /t 6',
-        '  exit /b 1',
-        ')',
-        'echo OK >> "%LOG%"',
-        'timeout /t 2 >nul',
-        'del "%~f0" >nul 2>&1',
-        'exit /b 0',
-      ];
-      // delayed expansion for RC
-      batLines[1] = 'setlocal EnableExtensions EnableDelayedExpansion';
+      // Script PowerShell (rutas con here-strings para espacios)
+      final psBody = '''
+\$ErrorActionPreference = 'Continue'
+\$APPDIR = @'
+$targetDir
+'@
+\$SRC = @'
+$src
+'@
+\$EXE = @'
+$targetExe
+'@
+\$OLDPID = $myPid
+\$LOG = @'
+$logPath
+'@
+\$DESKTOP = [Environment]::GetFolderPath('Desktop')
+\$LINK = Join-Path \$DESKTOP 'LOL Lite.lnk'
+\$STARTMENU = Join-Path ([Environment]::GetFolderPath('Programs')) 'LOL Lite.lnk'
 
-      await bat.writeAsString(batLines.join('\r\n'));
-      debugPrint('[Version] update bat → ${bat.path}');
-      debugPrint('[Version] update log → $logPath');
+function Log(\$m) {
+  try {
+    Add-Content -LiteralPath \$LOG -Value ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), \$m) -ErrorAction SilentlyContinue
+  } catch {}
+}
+
+try { "" | Set-Content -LiteralPath \$LOG -Encoding UTF8 } catch {}
+Log "=== LOL Lite UPDATE ==="
+Log "APPDIR=\$APPDIR"
+Log "SRC=\$SRC"
+Log "EXE=\$EXE"
+Log "OLDPID=\$OLDPID"
+
+for (\$i = 0; \$i -lt 40; \$i++) {
+  \$pr = Get-Process -Id \$OLDPID -ErrorAction SilentlyContinue
+  if (-not \$pr) { Log "PID \$OLDPID terminado"; break }
+  Start-Sleep -Milliseconds 500
+}
+
+Get-Process -Name 'lollite' -ErrorAction SilentlyContinue | ForEach-Object {
+  Log ("Kill lollite PID=" + \$_.Id)
+  Stop-Process -Id \$_.Id -Force -ErrorAction SilentlyContinue
+}
+Get-Process -ErrorAction SilentlyContinue | Where-Object {
+  \$_.Path -and \$_.Path.StartsWith(\$APPDIR, [StringComparison]::OrdinalIgnoreCase)
+} | ForEach-Object {
+  Log ("Kill related " + \$_.ProcessName + " PID=" + \$_.Id)
+  Stop-Process -Id \$_.Id -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 2
+
+if (-not (Test-Path -LiteralPath \$APPDIR)) {
+  New-Item -ItemType Directory -Path \$APPDIR -Force | Out-Null
+  Log "Creado APPDIR"
+}
+
+Log "Copiando..."
+\$copied = \$false
+if (Get-Command robocopy -ErrorAction SilentlyContinue) {
+  & robocopy \$SRC \$APPDIR /E /IS /IT /R:10 /W:2 /NFL /NDL /NJH /NJS /XD __MACOSX
+  \$rc = \$LASTEXITCODE
+  Log "robocopy exit=\$rc"
+  if (\$rc -lt 8) { \$copied = \$true }
+}
+if (-not \$copied) {
+  try {
+    Copy-Item -Path (Join-Path \$SRC '*') -Destination \$APPDIR -Recurse -Force -ErrorAction Stop
+    \$copied = \$true
+    Log "Copy-Item OK"
+  } catch {
+    Log ("Copy-Item FAIL: " + \$_.Exception.Message)
+  }
+}
+if (-not \$copied) {
+  Log "ERROR: no se pudo copiar"
+  exit 1
+}
+
+if (-not (Test-Path -LiteralPath \$EXE)) {
+  \$found = Get-ChildItem -LiteralPath \$APPDIR -Filter 'lollite.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not \$found) {
+    \$found = Get-ChildItem -LiteralPath \$APPDIR -Filter '*.exe' -File -ErrorAction SilentlyContinue |
+      Where-Object { \$_.Name -notmatch 'flutter|crashpad|helper|unins|installer|vcredist' } |
+      Select-Object -First 1
+  }
+  if (\$found) {
+    \$EXE = \$found.FullName
+    Log "Exe resuelto: \$EXE"
+  }
+}
+if (-not (Test-Path -LiteralPath \$EXE)) {
+  Log "ERROR: no hay lollite.exe en \$APPDIR"
+  exit 1
+}
+
+try {
+  \$regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+  \$prop = Get-ItemProperty -Path \$regPath -Name 'LolLiteDesktop' -ErrorAction SilentlyContinue
+  if (\$null -ne \$prop) {
+    Set-ItemProperty -Path \$regPath -Name 'LolLiteDesktop' -Value ('"' + \$EXE + '"')
+    Log "Registro Run actualizado"
+  }
+} catch { Log ("Registry: " + \$_.Exception.Message) }
+
+foreach (\$linkPath in @(\$LINK, \$STARTMENU)) {
+  try {
+    \$ws = New-Object -ComObject WScript.Shell
+    \$sc = \$ws.CreateShortcut(\$linkPath)
+    \$sc.TargetPath = \$EXE
+    \$sc.WorkingDirectory = \$APPDIR
+    \$sc.Description = 'LOL Lite'
+    if (Test-Path -LiteralPath \$EXE) { \$sc.IconLocation = \$EXE + ',0' }
+    \$sc.Save()
+    Log ("Shortcut OK: " + \$linkPath)
+  } catch { Log ("Shortcut fail: " + \$_.Exception.Message) }
+}
+
+Start-Sleep -Seconds 1
+Log "Start \$EXE"
+try {
+  \$p = Start-Process -FilePath \$EXE -WorkingDirectory \$APPDIR -PassThru
+  if (\$p) { Log ("Iniciado PID=" + \$p.Id) } else { Log "Start sin PID" }
+} catch {
+  Log ("Start FAIL: " + \$_.Exception.Message)
+  exit 1
+}
+Log "OK"
+exit 0
+''';
+
+      await File(ps1Path).writeAsString(psBody, flush: true);
+
+      final cmdBody = '''
+@echo off
+start "" /b powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "$ps1Path"
+''';
+      await File(batPath).writeAsString(cmdBody, flush: true);
+
+      debugPrint(
+          '[Version] update script → $ps1Path log=$logPath target=$targetDir');
 
       await Process.start(
-        'cmd',
-        ['/c', bat.path],
+        'cmd.exe',
+        ['/c', batPath],
         mode: ProcessStartMode.detached,
         workingDirectory: tmp.path,
+        runInShell: false,
       );
+
+      await Future<void>.delayed(const Duration(milliseconds: 400));
       return true;
     } catch (e) {
-      lastInstallError = 'Error aplicando ZIP: $e';
+      lastInstallError = 'Error aplicando actualización: $e';
+      debugPrint('[Version] applyDesktopUpdate: $e');
       return false;
     }
   }

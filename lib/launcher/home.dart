@@ -16,6 +16,7 @@ import 'comunidad_repos.dart';
 import 'config.dart';
 import 'buscar.dart';
 import 'downloads_page.dart';
+import 'salas_page.dart';
 import '../repo/player/player.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ class _LauncherHomeState extends State<LauncherHome> {
   final _nav = const [
     (Icons.home_rounded, 'Inicio'),
     (Icons.explore_rounded, 'Comunidad'),
+    (Icons.groups_rounded, 'Salas'),
     (Icons.search_rounded, 'Buscar'),
     (Icons.download_rounded, 'Descargas'),
     (Icons.settings_rounded, 'Ajustes'),
@@ -182,10 +184,12 @@ class _LauncherHomeState extends State<LauncherHome> {
       case 1:
         return const CommunityPage(key: ValueKey('community'));
       case 2:
-        return const LauncherSearchPage(key: ValueKey('search'));
+        return const SalasPage(key: ValueKey('salas'));
       case 3:
-        return const DownloadsPage(key: ValueKey('downloads'));
+        return const LauncherSearchPage(key: ValueKey('search'));
       case 4:
+        return const DownloadsPage(key: ValueKey('downloads'));
+      case 5:
         return const LauncherConfigPage(key: ValueKey('config'));
       default:
         return const SizedBox.shrink();
@@ -225,14 +229,29 @@ class _Sidebar extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: _accent,
-                    borderRadius: BorderRadius.circular(10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset(
+                    'assets/app_icon.ico',
+                    width: 38,
+                    height: 38,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Image.asset(
+                      'assets/tray_icon.ico',
+                      width: 38,
+                      height: 38,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: _accent,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 24),
+                      ),
+                    ),
                   ),
-                  child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 24),
                 ),
                 const SizedBox(width: 12),
                 const Text(
@@ -242,6 +261,7 @@ class _Sidebar extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                     color: Colors.white,
                     letterSpacing: -0.3,
+                    decoration: TextDecoration.none,
                   ),
                 ),
               ],

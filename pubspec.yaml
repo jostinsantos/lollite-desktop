@@ -1,7 +1,7 @@
 name: nuvio_launcher
 description: Launcher de repositorios GitHub (estilo Nuvio).
 publish_to: 'none'
-version: 1.0.0+1
+version: 0.1.2+12
 
 environment:
   sdk: ^3.5.4
@@ -31,6 +31,8 @@ dependencies:
   media_kit_libs_video: ^1.0.5
   apk_sideload: ^0.0.2
   window_manager: ^0.4.3
+  tray_manager: ^0.2.3
+  supabase_flutter: ^2.8.0
 
 dev_dependencies:
   flutter_test:
@@ -46,3 +48,6 @@ flutter:
     - assets/js/cheerio.bundle.js
     - assets/images/
     - assets/sample_repo/
+    - assets/tray_icon.ico
+    - assets/app_icon.ico
+    - assets/spiner.gif

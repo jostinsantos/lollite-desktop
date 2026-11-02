@@ -19,6 +19,8 @@ import '../../../data/services/library_service.dart';
 import '../../../data/services/repo_prefs.dart';
 import '../../../data/services/download_service.dart';
 import '../../../data/models/download_item.dart';
+import '../../../data/services/party_service.dart';
+import 'party_player.dart';
 
 enum _VideoFitMode { original, ratio16_9, ratio21_9, ratio16_10, ratio4_3 }
 
@@ -1843,6 +1845,15 @@ class _DesktopPlayerPageState extends State<DesktopPlayerPage> {
                   active: _showServers,
                   tooltip: 'Servidores',
                 ),
+                // Party / Sala
+                _ctrlBtn(
+                  Icons.groups_rounded,
+                  () {
+                    _onUserActivity();
+                    _showCreatePartyDialog();
+                  },
+                  tooltip: 'Crear sala Party',
+                ),
                 // Ajustar tamaño (como TV)
                 _ctrlBtn(
                   _fitModeIcon,
@@ -2164,5 +2175,132 @@ class _DesktopPlayerPageState extends State<DesktopPlayerPage> {
         ),
       ),
     );
+  }
+
+
+  Future<void> _showCreatePartyDialog() async {
+    await PartyService.instance.init();
+    if (!mounted) return;
+
+    final usernameCtrl = TextEditingController(
+      text: PartyService.instance.username ?? '',
+    );
+    final titleCtrl = TextEditingController(text: widget.title);
+    bool isPublic = true;
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF161A22),
+              title: const Text('Crear sala Party',
+                  style: TextStyle(color: Colors.white)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: usernameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Tu nombre de usuario',
+                      labelStyle: TextStyle(color: Colors.white54),
+                      enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                    ),
+                    maxLength: 24,
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: titleCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Título de la sala',
+                      labelStyle: TextStyle(color: Colors.white54),
+                      enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                    ),
+                    maxLength: 80,
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Sala pública',
+                        style: TextStyle(color: Colors.white70)),
+                    subtitle: Text(
+                      isPublic
+                          ? 'Cualquiera puede unirse con el código o desde Salas'
+                          : 'Solo por código + aceptación del anfitrión',
+                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                    ),
+                    value: isPublic,
+                    activeColor: _accent,
+                    onChanged: (v) => setLocal(() => isPublic = v),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Crear sala'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result != true || !mounted) return;
+
+    try {
+      final name = usernameCtrl.text.trim();
+      if (name.isNotEmpty) {
+        await PartyService.instance.setUsername(name);
+      }
+      if (PartyService.instance.username == null ||
+          PartyService.instance.username!.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Necesitas un nombre de usuario')),
+          );
+        }
+        return;
+      }
+
+      final room = await PartyService.instance.createRoom(
+        title: titleCtrl.text.trim().isEmpty ? widget.title : titleCtrl.text.trim(),
+        contentId: widget.contentId,
+        repoId: widget.repo.manifest.id,
+        contentType: widget.contentType,
+        poster: widget.poster,
+        backdrop: widget.backdrop,
+        season: widget.season ?? widget.seasonNumber,
+        episode: widget.episode,
+        language: widget.preferredLanguage,
+        isPublic: isPublic,
+      );
+
+      if (!mounted) return;
+
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => PartyPlayerPage(room: room, repo: widget.repo),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al crear sala: $e')),
+        );
+      }
+    }
   }
 }

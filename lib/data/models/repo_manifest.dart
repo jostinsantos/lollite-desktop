@@ -376,9 +376,44 @@ class RepoManifest extends Equatable {
   });
 
 
-  /// Pestañas del menú del repo (inicio / descubrir / buscar / biblioteca / ajustes).
-  /// Prioridad: `tabs` o `pages` en lol.json → derivadas de `capabilities` → todas.
+  /// Repo orientado a TV en vivo / IPTV (no catálogo VOD).
+  bool get isLiveRepo {
+    bool hit(String s) {
+      final t = s.toLowerCase().trim();
+      return t == 'live' ||
+          t == 'tv' ||
+          t == 'iptv' ||
+          t == 'channel' ||
+          t == 'channels' ||
+          t == 'canales' ||
+          t == 'en vivo' ||
+          t == 'envivo';
+    }
+
+    for (final c in capabilities) {
+      if (hit(c)) return true;
+    }
+    final cats = raw['categories'] ?? raw['category'];
+    if (cats is List) {
+      for (final c in cats) {
+        if (hit(c.toString())) return true;
+      }
+    } else if (cats is String && hit(cats)) {
+      return true;
+    }
+    final type =
+        (raw['type'] ?? raw['repoType'] ?? raw['kind'] ?? '').toString();
+    if (hit(type)) return true;
+    return false;
+  }
+
+  /// Pestañas del menú del repo.
+  /// Live IPTV → solo live + settings. Resto sin cambios.
   List<String> get resolvedTabs {
+    if (isLiveRepo) {
+      return const ['live', 'settings'];
+    }
+
     final explicit = raw['tabs'] ?? raw['pages'] ?? raw['menu'];
     if (explicit is List && explicit.isNotEmpty) {
       return explicit
@@ -389,22 +424,26 @@ class RepoManifest extends Equatable {
           .toList();
     }
     final caps = capabilities.map((c) => c.toLowerCase().trim()).toSet();
-    // Sin capabilities → comportamiento clásico (todas)
     if (caps.isEmpty) {
       return const ['home', 'discover', 'search', 'library', 'settings'];
     }
     final tabs = <String>[];
     if (caps.contains('home')) tabs.add('home');
-    if (caps.contains('discover') || caps.contains('browse')) tabs.add('discover');
+    if (caps.contains('discover') || caps.contains('browse')) {
+      tabs.add('discover');
+    }
     if (caps.contains('search')) tabs.add('search');
-    if (caps.contains('live') || caps.contains('channel') || caps.contains('tv') || caps.contains('iptv')) {
+    if (caps.contains('live') ||
+        caps.contains('channel') ||
+        caps.contains('tv') ||
+        caps.contains('iptv')) {
       tabs.add('live');
     }
-    // Biblioteca y ajustes siempre disponibles para el usuario
     tabs.add('library');
     tabs.add('settings');
-    // Si el repo solo declara streams/meta (raro), al menos home+search si había home
-    if (tabs.isEmpty) tabs.addAll(const ['home', 'search', 'library', 'settings']);
+    if (tabs.isEmpty) {
+      tabs.addAll(const ['home', 'search', 'library', 'settings']);
+    }
     return tabs;
   }
 
